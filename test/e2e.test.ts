@@ -27,7 +27,7 @@ const skipE2E =
 
 describe.runIf(!skipE2E)("Langfuse E2E Integration", () => {
 	const config = resolveConfig({});
-	const testId = `e2e-test-${randomUUID()}`;
+	const testId = randomUUID();
 
 	beforeEach(async () => {
 		await shutdownClient();
@@ -76,13 +76,13 @@ describe.runIf(!skipE2E)("Langfuse E2E Integration", () => {
 		const baseUrl = config.host.endsWith("/")
 			? config.host.slice(0, -1)
 			: config.host;
-		const apiUrl = `${baseUrl}/api/public/traces/${testId}`;
+		const apiUrl = `${baseUrl}/api/public/traces/${trace.id}`;
 
 		let retrievedTrace: LangfuseTraceResponse | null = null;
 		let attempts = 0;
 		const maxAttempts = 10;
 
-		console.log(`Polling for trace ${testId} at ${apiUrl}...`);
+		console.log(`Polling for trace ${trace.id} at ${apiUrl}...`);
 
 		while (attempts < maxAttempts) {
 			const response = await fetch(apiUrl, {
@@ -102,9 +102,9 @@ describe.runIf(!skipE2E)("Langfuse E2E Integration", () => {
 		}
 
 		expect(retrievedTrace).toBeDefined();
-		if (!retrievedTrace) throw new Error(`Trace ${testId} was not retrieved`);
+		if (!retrievedTrace) throw new Error(`Trace ${trace.id} was not retrieved`);
 		expect(retrievedTrace.name).toBe("e2e-pi-test");
-		expect(retrievedTrace.id).toBe(testId);
+		expect(retrievedTrace.id).toBe(trace.id);
 		expect(retrievedTrace.tags).toContain("env:e2e-test");
 
 		// Check observations count (Span + Generation)
