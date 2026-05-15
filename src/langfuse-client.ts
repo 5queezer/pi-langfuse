@@ -121,6 +121,14 @@ class LangfuseV4Client implements LangfuseClient {
 	private readonly tracerProvider: BasicTracerProvider;
 	private readonly observationsById = new Map<string, SdkObservation>();
 	private readonly rootsByTraceId = new Map<string, SdkLangfuseSpan>();
+	private activeOperations = 0;
+	private idleWaiters: Array<() => void> = [];
+	private shutdownPromise: Promise<void> | null = null;
+	private shuttingDown = false;
+
+	get isShuttingDown() {
+		return this.shuttingDown;
+	}
 
 	constructor(config: Config) {
 		this.apiClient = new LangfuseApiClient({
@@ -142,28 +150,33 @@ class LangfuseV4Client implements LangfuseClient {
 	}
 
 	trace(body?: TraceUpdateBody): LangfuseTrace {
-		const traceId = normalizeTraceId(body?.id);
-		const root = startObservation(
-			body?.name ?? "trace",
-			toObservationAttributes(body),
-			{
-				asType: "span",
-				parentSpanContext: traceId
-					? createParentSpanContext(traceId)
-					: undefined,
-			},
-		);
-		root.updateTrace(toTraceAttributes(body));
-		this.remember(root);
-		this.rootsByTraceId.set(root.traceId, root);
+		const finishOperation = this.beginOperation();
+		try {
+			const traceId = normalizeTraceId(body?.id);
+			const root = startObservation(
+				body?.name ?? "trace",
+				toObservationAttributes(body),
+				{
+					asType: "span",
+					parentSpanContext: traceId
+						? createParentSpanContext(traceId)
+						: undefined,
+				},
+			);
+			root.updateTrace(toTraceAttributes(body));
+			this.remember(root);
+			this.rootsByTraceId.set(root.traceId, root);
 
-		return {
-			id: root.traceId,
-			update: (updateBody?: TraceUpdateBody) => {
-				root.update(toObservationAttributes(updateBody));
-				root.updateTrace(toTraceAttributes(updateBody));
-			},
-		};
+			return {
+				id: root.traceId,
+				update: (updateBody?: TraceUpdateBody) => {
+					root.update(toObservationAttributes(updateBody));
+					root.updateTrace(toTraceAttributes(updateBody));
+				},
+			};
+		} finally {
+			finishOperation();
+		}
 	}
 
 	span(body: {
@@ -174,8 +187,13 @@ class LangfuseV4Client implements LangfuseClient {
 		input?: unknown;
 		output?: unknown;
 	}): LangfuseSpan {
-		const observation = this.startChildObservation(body, "span");
-		return this.wrapObservation(observation);
+		const finishOperation = this.beginOperation();
+		try {
+			const observation = this.startChildObservation(body, "span");
+			return this.wrapObservation(observation);
+		} finally {
+			finishOperation();
+		}
 	}
 
 	generation(body: {
@@ -191,8 +209,13 @@ class LangfuseV4Client implements LangfuseClient {
 		costDetails?: Record<string, number>;
 		version?: string;
 	}): LangfuseGeneration {
-		const observation = this.startChildObservation(body, "generation");
-		return this.wrapObservation(observation);
+		const finishOperation = this.beginOperation();
+		try {
+			const observation = this.startChildObservation(body, "generation");
+			return this.wrapObservation(observation);
+		} finally {
+			finishOperation();
+		}
 	}
 
 	score(body: {
@@ -212,6 +235,14 @@ class LangfuseV4Client implements LangfuseClient {
 	}
 
 	async shutdownAsync() {
+		if (this.shutdownPromise) return this.shutdownPromise;
+		this.shuttingDown = true;
+		this.shutdownPromise = this.shutdown();
+		return this.shutdownPromise;
+	}
+
+	private async shutdown() {
+		await this.waitForIdle();
 		await this.flushAsync();
 		await this.tracerProvider.shutdown();
 		await this.apiClient.shutdown();
@@ -229,6 +260,7 @@ class LangfuseV4Client implements LangfuseClient {
 		},
 		asType: "span" | "generation",
 	) {
+		this.assertNotShuttingDown();
 		const parent =
 			(body.parentObservationId
 				? this.observationsById.get(body.parentObservationId)
@@ -270,6 +302,34 @@ class LangfuseV4Client implements LangfuseClient {
 	private remember(observation: SdkObservation) {
 		this.observationsById.set(observation.id, observation);
 	}
+
+	private beginOperation() {
+		this.assertNotShuttingDown();
+		this.activeOperations += 1;
+		let finished = false;
+		return () => {
+			if (finished) return;
+			finished = true;
+			this.activeOperations -= 1;
+			if (this.activeOperations === 0) {
+				for (const resolve of this.idleWaiters) resolve();
+				this.idleWaiters = [];
+			}
+		};
+	}
+
+	private waitForIdle() {
+		if (this.activeOperations === 0) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			this.idleWaiters.push(resolve);
+		});
+	}
+
+	private assertNotShuttingDown() {
+		if (this.shuttingDown) {
+			throw new Error("Langfuse client is shutting down");
+		}
+	}
 }
 
 let client: LangfuseClient | null = null;
@@ -283,9 +343,12 @@ export async function flushClient() {
 
 export async function shutdownClient() {
 	if (client) {
-		await client.shutdownAsync();
-		client = null;
-		clientConfigKey = "";
+		const currentClient = client;
+		await currentClient.shutdownAsync();
+		if (client === currentClient) {
+			client = null;
+			clientConfigKey = "";
+		}
 	}
 }
 
@@ -299,6 +362,10 @@ export async function getClient(config: Config): Promise<LangfuseClient> {
 	});
 
 	if (client && clientConfigKey !== nextConfigKey) {
+		await shutdownClient();
+	}
+
+	if (client instanceof LangfuseV4Client && client.isShuttingDown) {
 		await shutdownClient();
 	}
 
