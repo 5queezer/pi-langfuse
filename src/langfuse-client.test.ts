@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "./config.js";
 import { getClient, shutdownClient } from "./langfuse-client.js";
 
-// Mock the dynamic import of langfuse
+// Keep the module mockable for future client lifecycle tests.
 vi.mock("./langfuse-client.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./langfuse-client.js")>();
 	return {

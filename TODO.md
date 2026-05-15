@@ -137,7 +137,7 @@ Goal: make `pi-langfuse` a first-class, Langfuse-native observability extension 
 
 ## Phase 8 — SDK modernization
 
-- [x] Upgrade `langfuse` dependency to `^3.38.20`
+- [x] Upgrade Langfuse SDK usage to the v4 scoped packages
 - [x] Review current Langfuse JS/TS migration guidance
 - [x] Adopt newer patterns (release, environment, manual attribute propagation)
 - [x] Re-check metadata requirements after upgrade
